@@ -59,6 +59,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
 from ms2pip._utils import dlib
+from ms2pip._utils.ion_types import parse_ion_type
 from ms2pip.result import ProcessingResult
 
 LOGGER = logging.getLogger(__name__)
@@ -431,8 +432,15 @@ class Spectronaut(_Writer):
             for ion_type in intensities
         }
         for ion_type in result.predicted_intensity:  # type: ignore[ty:not-iterable]
-            fragment_type = ion_type[0].lower()
-            fragment_charge = ion_type[1:] if len(ion_type) > 1 else "1"
+            fragment_type, variant, charge = parse_ion_type(ion_type)
+            if variant:
+                # Spectronaut has no notation for hydrogen-shift variants (z+1, c-1, ...).
+                warnings.warn(
+                    f"Spectronaut output cannot express ion type {ion_type!r}; skipping it.",
+                    stacklevel=2,
+                )
+                continue
+            fragment_charge = str(charge)
             for ion_index, (intensity, mz) in enumerate(
                 zip(intensities[ion_type], result.theoretical_mz[ion_type])  # type: ignore[ty:invalid-argument-type, ty:not-subscriptable]
             ):

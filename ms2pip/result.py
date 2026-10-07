@@ -9,6 +9,7 @@ import numpy as np
 from psm_utils import PSM
 from pydantic import BaseModel, ConfigDict
 
+from ms2pip._utils.ion_types import annotation_label
 from ms2pip.correlation import pearson
 from ms2pip.spectrum import ObservedSpectrum, PredictedSpectrum
 
@@ -53,7 +54,7 @@ class ProcessingResult(BaseModel):
         mz = np.concatenate([i for i in self.theoretical_mz.values()])
         annotations = np.concatenate(
             [
-                [ion_type + str(i + 1) for i in range(len(peaks))]
+                [annotation_label(ion_type, i + 1) for i in range(len(peaks))]
                 for ion_type, peaks in self.theoretical_mz.items()
             ]
         )

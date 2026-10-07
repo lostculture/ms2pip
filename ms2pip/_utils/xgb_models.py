@@ -11,6 +11,7 @@ import numpy as np
 import xgboost as xgb
 
 import ms2pip.exceptions as exceptions
+from ms2pip._utils.ion_types import is_c_terminal
 from ms2pip.constants import MODELS
 
 logger = logging.getLogger(__name__)
@@ -130,13 +131,8 @@ def predict_intensities(
         preds = xgb_model.predict(dmatrix)
         preds = preds.clip(min=np.log2(0.001))
 
-        if ion_type.lower() in ["x", "y", "y2", "z"]:
-            preds = _split_list_by_lengths(preds, num_ions, reverse=True)
-        elif ion_type.lower() in ["a", "b", "b2", "c"]:
-            preds = _split_list_by_lengths(preds, num_ions, reverse=False)
-        else:
-            raise ValueError(f"Unsupported ion_type: {ion_type}")
-        prediction_dict[ion_type] = preds
+        reverse = is_c_terminal(ion_type)  # raises ValueError for unknown ion types
+        prediction_dict[ion_type] = _split_list_by_lengths(preds, num_ions, reverse=reverse)
 
     num_peptides = len(list(prediction_dict.values())[0])
     return [{k: v[i] for k, v in prediction_dict.items()} for i in range(num_peptides)]

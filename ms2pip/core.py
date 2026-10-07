@@ -24,6 +24,7 @@ from ms2pip._spectrum_processing import (
     proforma_to_mass_shift,
     resolve_spectra,
 )
+from ms2pip._utils.ion_types import is_c_terminal
 from ms2pip._utils.psm_input import filter_valid_psms, read_psms
 from ms2pip._utils.xgb_models import load_xgb_models, predict_intensities, validate_model
 from ms2pip.constants import MODELS
@@ -299,22 +300,15 @@ def _assemble_training_data(results: list[ProcessingResult], model: str) -> pd.D
         ]
     )
     for ion_type in ion_types:
-        if ion_type in ["a", "b", "b2", "c"]:
-            training_data[f"target_{ion_type}"] = np.concatenate(
-                [
-                    r.observed_intensity[ion_type]
-                    for r in results
-                    if r.feature_vectors is not None and r.observed_intensity is not None
-                ]
-            )
-        elif ion_type in ["x", "y", "y2", "z"]:
-            training_data[f"target_{ion_type}"] = np.concatenate(
-                [
-                    r.observed_intensity[ion_type][::-1]
-                    for r in results
-                    if r.feature_vectors is not None and r.observed_intensity is not None
-                ]
-            )
+        # Feature rows run N- to C-terminal; C-terminal series are numbered the other way.
+        step = -1 if is_c_terminal(ion_type) else 1
+        training_data[f"target_{ion_type}"] = np.concatenate(
+            [
+                r.observed_intensity[ion_type][::step]
+                for r in results
+                if r.feature_vectors is not None and r.observed_intensity is not None
+            ]
+        )
 
     training_data = training_data[
         ["psm_index"] + get_feature_names() + [f"target_{it}" for it in ion_types]
