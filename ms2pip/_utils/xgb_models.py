@@ -41,6 +41,11 @@ def validate_model(model: str, model_dir: str | Path | None = None) -> Path:
     model_dir = Path(model_dir) if model_dir else Path.home() / ".ms2pip"
     if model not in MODELS:
         raise exceptions.UnknownModelError(model)
+    if "xgboost_model_files" not in MODELS[model]:
+        raise exceptions.UntrainedModelError(
+            f"Model {model} has no trained model files yet; it can only be used to "
+            "extract training data or annotate spectra."
+        )
     logger.debug("Using %s model", model)
     _validate_requested_xgb_model(
         MODELS[model]["xgboost_model_files"],

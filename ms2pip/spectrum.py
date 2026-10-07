@@ -20,6 +20,9 @@ def _coerce_peptidoform(v):
 
 _PeptidoformField = Annotated[Peptidoform | None, BeforeValidator(_coerce_peptidoform)]
 
+_NEUTRON = 1.003355  # 13C - 12C mass difference
+_HYDROGEN = 1.007825
+
 
 class Spectrum(BaseModel):
     """
@@ -128,6 +131,33 @@ class Spectrum(BaseModel):
         for i, mz in enumerate(self.mz):
             if (mz >= self.precursor_mz - tolerance) & (mz <= self.precursor_mz + tolerance):
                 self.intensity[i] = 0
+
+    def remove_charge_reduced_precursor(self, tolerance=0.02, tolerance_mode="Da") -> None:
+        """
+        Set the intensity of the precursor and its charge-reduced species to 0.
+
+        Electron-based fragmentation leaves much of the signal in the intact precursor
+        and in charge-reduced forms ([M+zH]^(k)+· for k < z). Each is removed with
+        isotopes 0-3 and hydrogen shifts of -2 to +2. Without a precursor charge, only
+        the precursor m/z itself is removed.
+        """
+        if not self.precursor_mz:
+            raise ValueError("Precursor m/z must be set.")
+        if not self.precursor_charge:
+            targets = np.array([self.precursor_mz])
+        else:
+            charge = self.precursor_charge
+            mh = self.precursor_mz * charge  # [M+zH] mass, as seen at charge 1
+            shifts = (
+                np.arange(4)[:, None] * _NEUTRON + np.arange(-2, 3)[None, :] * _HYDROGEN
+            ).ravel()
+            targets = np.concatenate([(mh + shifts) / k for k in range(1, charge + 1)])
+        if tolerance_mode.lower() == "ppm":
+            window = targets * tolerance * 1e-6
+        else:
+            window = np.full(targets.shape, tolerance)
+        hit = np.any(np.abs(self.mz[:, None] - targets[None, :]) <= window[None, :], axis=1)
+        self.intensity = np.where(hit, 0, self.intensity)
 
     def tic_norm(self) -> None:
         """Normalize spectrum to total ion current."""

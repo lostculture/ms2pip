@@ -165,6 +165,14 @@ MODELS = {
             "model_20240105_timsTOF_Y.xgboost": "3f0414ee1ad7cff739e0d6242e25bfc22b6ebfe5",
         },
     },
+    # Electron-activated dissociation (SCIEX ZenoTOF). c and z+1 (z·) carry most of the
+    # fragment intensity, alongside b and y. Most of the spectrum is unfragmented or
+    # charge-reduced precursor, which is removed before normalisation. Not yet trained.
+    "EAD": {
+        "ion_types": ["B", "Y", "C", "Z+1"],
+        "fragmentation": "ead_ext",
+        "remove_charge_reduced_precursor": True,
+    },
 }
 
 

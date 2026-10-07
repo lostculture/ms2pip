@@ -20,6 +20,7 @@ from rich.progress import track
 import ms2pip.exceptions as exceptions
 from ms2pip._spectrum_processing import (
     MatchedSpectrum,
+    _preprocess_spectrum,
     annotate_spectrum,
     proforma_to_mass_shift,
     resolve_spectra,
@@ -594,11 +595,7 @@ def correlate_single(
 
     # Preprocess a copy of the spectrum (TIC normalization + log2 transform)
     preprocessed = observed_spectrum.model_copy(deep=True)
-    for label_type in ["iTRAQ", "TMT"]:
-        if label_type in model:
-            preprocessed.remove_reporter_ions(label_type)
-    preprocessed.tic_norm()
-    preprocessed.log2_transform()
+    _preprocess_spectrum(preprocessed, model, ms2_tolerance, ms2_tolerance_mode)
 
     psm = PSM(peptidoform=observed_spectrum.peptidoform, spectrum_id=0)
     annotated = annotate_spectrum(preprocessed, psm, model, ms2_tolerance, ms2_tolerance_mode)

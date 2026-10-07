@@ -62,11 +62,24 @@ def _to_observed_spectrum(spectrum: MS2Spectrum) -> ObservedSpectrum:
     )
 
 
-def _preprocess_spectrum(spectrum: ObservedSpectrum, model: str) -> None:
-    """Remove reporter ions (if applicable), TIC-normalize, and log2-transform in place."""
+def _preprocess_spectrum(
+    spectrum: ObservedSpectrum,
+    model: str,
+    ms2_tolerance: float = 0.02,
+    ms2_tolerance_mode: str = "Da",
+) -> None:
+    """
+    Remove reporter ions and (for electron-based models) precursor species, if applicable,
+    then TIC-normalize and log2-transform in place.
+    """
     for label_type in ["iTRAQ", "TMT"]:
         if label_type in model:
             spectrum.remove_reporter_ions(label_type)
+    if MODELS[model].get("remove_charge_reduced_precursor") and spectrum.precursor_mz:
+        spectrum.remove_charge_reduced_precursor(ms2_tolerance, ms2_tolerance_mode)
+        if not spectrum.tic:
+            spectrum.log2_transform()  # nothing but precursor: all-zero targets, not NaN
+            return
     spectrum.tic_norm()
     spectrum.log2_transform()
 
@@ -227,7 +240,7 @@ def _load_and_match_spectra(
 
         if spec_id not in preprocessed_cache:
             obs = _to_observed_spectrum(raw_spectrum)
-            _preprocess_spectrum(obs, model)
+            _preprocess_spectrum(obs, model, ms2_tolerance, ms2_tolerance_mode)
             preprocessed_cache[spec_id] = obs
 
         results.append(
@@ -274,7 +287,7 @@ def _preloaded_to_annotations(
         spectrum = psm.spectrum
         assert spectrum is not None
         obs = _to_observed_spectrum(spectrum)
-        _preprocess_spectrum(obs, model)
+        _preprocess_spectrum(obs, model, ms2_tolerance, ms2_tolerance_mode)
         preloaded_spectra[spec_key] = obs
         if not spectra_are_annotated:
             raw_spectra[spec_key] = spectrum  # type: ignore[assignment]

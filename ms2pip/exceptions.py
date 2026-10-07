@@ -40,3 +40,7 @@ class TitlePatternError(MS2PIPError):
 
 class InvalidXGBoostModelError(MS2PIPError):
     pass
+
+
+class UntrainedModelError(MS2PIPError):
+    pass
