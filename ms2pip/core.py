@@ -262,7 +262,7 @@ def _extract_training_data(
             psm_index=m.psm_index,
             psm=m.psm,
             observed_intensity=all_targets[i],
-            feature_vectors=all_features[i],
+            feature_vectors=all_features[i].reshape(-1, NUM_FEATURES),
         )
         for i, m in enumerate(valid_matches)
     ]

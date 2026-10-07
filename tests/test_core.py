@@ -1,7 +1,8 @@
 import numpy as np
 from psm_utils import PSM, PSMList, Peptidoform
 
-from ms2pip.core import predict_batch, predict_library, predict_single
+from ms2pip._utils.feature_names import get_feature_names
+from ms2pip.core import get_training_data, predict_batch, predict_library, predict_single
 from ms2pip.result import ProcessingResult
 
 
@@ -91,3 +92,15 @@ def test_predict_library():
             assert isinstance(result, ProcessingResult)
             assert result.predicted_intensity is not None
             assert result.theoretical_mz is not None
+
+
+def test_get_training_data_mixed_peptide_lengths():
+    """One feature row per cleavage site, for peptides of different lengths."""
+    data = get_training_data(
+        "tests/test_data/massivekb_selected_500.peprec",
+        "tests/test_data/massivekb_selected_500.mgf",
+        model="HCD",
+    )
+    assert data.shape[1] == 1 + len(get_feature_names()) + 2
+    assert data["psm_index"].nunique() > 1
+    assert data.groupby("psm_index").size().nunique() > 1  # several peptide lengths
