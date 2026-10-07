@@ -51,17 +51,20 @@ class ProcessingResult(BaseModel):
         """Convert result to predicted and observed spectra."""
         if not self.theoretical_mz:
             raise ValueError("Theoretical m/z values required to convert to spectra.")
-        mz = np.concatenate([i for i in self.theoretical_mz.values()])
+        # The dicts can list ion types in different orders (ms2rescore-rs returns
+        # HashMaps), so always look them up by name in one fixed order.
+        ion_types = list(self.theoretical_mz)
+        mz = np.concatenate([self.theoretical_mz[it] for it in ion_types])
         annotations = np.concatenate(
             [
-                [annotation_label(ion_type, i + 1) for i in range(len(peaks))]
-                for ion_type, peaks in self.theoretical_mz.items()
+                [annotation_label(it, i + 1) for i in range(len(self.theoretical_mz[it]))]
+                for it in ion_types
             ]
         )
         peak_order = np.argsort(mz)
 
         if self.predicted_intensity:
-            pred_int = np.concatenate(list(self.predicted_intensity.values()))
+            pred_int = np.concatenate([self.predicted_intensity[it] for it in ion_types])
             predicted = PredictedSpectrum(
                 mz=mz[peak_order],
                 intensity=pred_int[peak_order],
@@ -74,7 +77,7 @@ class ProcessingResult(BaseModel):
             predicted = None
 
         if self.observed_intensity:
-            obs_int = np.concatenate(list(self.observed_intensity.values()))
+            obs_int = np.concatenate([self.observed_intensity[it] for it in ion_types])
             observed = ObservedSpectrum(
                 mz=mz[peak_order],
                 intensity=obs_int[peak_order],
@@ -131,8 +134,10 @@ def calculate_correlations(results: list[ProcessingResult]) -> None:
     for result in results:
         if result.predicted_intensity is None or result.observed_intensity is None:
             continue
-        pred_int = np.concatenate(list(result.predicted_intensity.values()))
-        obs_int = np.concatenate(list(result.observed_intensity.values()))
+        # Pair ion types by name: the observed dict's order can differ (Rust HashMap).
+        ion_types = list(result.predicted_intensity)
+        pred_int = np.concatenate([result.predicted_intensity[it] for it in ion_types])
+        obs_int = np.concatenate([result.observed_intensity[it] for it in ion_types])
         result.correlation = pearson(pred_int, obs_int)
 
 

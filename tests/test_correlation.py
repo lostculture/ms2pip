@@ -53,3 +53,40 @@ def test_spectral_angle_orthogonal():
     sa = spectral_angle(true, pred)
 
     assert sa < 0.5
+
+
+def _result_with_shuffled_keys():
+    """Result whose dicts list the same ion types in different orders.
+
+    ms2rescore-rs returns observed intensities and theoretical m/z as Rust
+    HashMaps, so their key order varies from PSM to PSM.
+    """
+    from psm_utils import PSM
+
+    from ms2pip.result import ProcessingResult
+
+    b = np.array([-1.0, -2.0, -3.0])
+    y = np.array([-9.0, -5.0, -7.0])
+    return ProcessingResult(
+        psm_index=0,
+        psm=PSM(peptidoform="PEPK/2", spectrum_id=0),
+        theoretical_mz={"y": np.array([147.1, 244.2, 341.2]), "b": np.array([98.1, 227.1, 324.2])},
+        predicted_intensity={"b": b, "y": y},
+        observed_intensity={"y": y, "b": b},
+    )
+
+
+def test_calculate_correlations_aligns_ion_types_by_name():
+    from ms2pip.result import calculate_correlations
+
+    result = _result_with_shuffled_keys()
+    calculate_correlations([result])
+    assert abs(result.correlation - 1.0) < 1e-6
+
+
+def test_as_spectra_pairs_mz_with_intensity_by_ion_type():
+    predicted, observed = _result_with_shuffled_keys().as_spectra()
+    by_mz = dict(zip(np.round(predicted.mz, 1), np.round(np.log2(predicted.intensity + 0.001), 1)))
+    assert by_mz[98.1] == -1.0  # b1
+    assert by_mz[147.1] == -9.0  # y1
+    np.testing.assert_allclose(predicted.intensity, observed.intensity)
