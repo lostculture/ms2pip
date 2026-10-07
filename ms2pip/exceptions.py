@@ -44,3 +44,7 @@ class InvalidXGBoostModelError(MS2PIPError):
 
 class UntrainedModelError(MS2PIPError):
     pass
+
+
+class ModelFileNotFoundError(MS2PIPError):
+    pass

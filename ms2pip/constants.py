@@ -167,11 +167,26 @@ MODELS = {
     },
     # Electron-activated dissociation (SCIEX ZenoTOF). c and z+1 (z·) carry most of the
     # fragment intensity, alongside b and y. Most of the spectrum is unfragmented or
-    # charge-reduced precursor, which is removed before normalisation. Not yet trained.
+    # charge-reduced precursor, which is removed before normalisation.
+    # Preliminary: trained on one lab's antibody digests (PXD063988, KE 9 eV). Files are
+    # attached to a pre-release on the lostculture fork until they have a permanent home.
     "EAD": {
         "ion_types": ["B", "Y", "C", "Z+1"],
         "fragmentation": "ead_ext",
         "remove_charge_reduced_precursor": True,
+        "xgboost_model_files": {
+            "b": "model_20261007_EAD_B.xgboost",
+            "y": "model_20261007_EAD_Y.xgboost",
+            "c": "model_20261007_EAD_C.xgboost",
+            "z+1": "model_20261007_EAD_Zp1.xgboost",
+        },
+        "model_hash": {
+            "model_20261007_EAD_B.xgboost": "c71f14edfcc2f421ded2c14a93f9ab4659c2458a",
+            "model_20261007_EAD_Y.xgboost": "95e35e85b660bb66f3c62bad036c4b10327bfac0",
+            "model_20261007_EAD_C.xgboost": "31cc548caa29e6a630a7015cf8ffbe7c805bd2c0",
+            "model_20261007_EAD_Zp1.xgboost": "1c43fc7984059c1b54d7690112f3241384f10136",
+        },
+        "download_url": "https://github.com/lostculture/ms2pip/releases/download/ead-model-20261007",
     },
 }
 

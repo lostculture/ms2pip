@@ -1,5 +1,7 @@
 """EAD model: ion types and precursor / charge-reduced precursor removal."""
 
+import hashlib
+
 import numpy as np
 import pytest
 
@@ -73,6 +75,55 @@ def test_preprocess_other_models_keep_precursor():
     assert np.all(2**spectrum.intensity - 0.001 > 0)
 
 
-def test_validate_model_without_trained_files_raises():
-    with pytest.raises(exceptions.UntrainedModelError, match="EAD"):
-        validate_model("EAD")
+def test_validate_model_without_trained_files_raises(monkeypatch):
+    monkeypatch.setitem(MODELS, "UNTRAINED", {"ion_types": ["C"], "fragmentation": "ead"})
+    with pytest.raises(exceptions.UntrainedModelError, match="UNTRAINED"):
+        validate_model("UNTRAINED")
+
+
+def test_ead_model_has_a_hashed_file_per_ion_type():
+    files = MODELS["EAD"]["xgboost_model_files"]
+    assert sorted(files) == sorted(it.lower() for it in MODELS["EAD"]["ion_types"])
+    assert all(len(MODELS["EAD"]["model_hash"][f]) == 40 for f in files.values())
+
+
+def _local_only_model(monkeypatch, model_dir, content=b"model bytes"):
+    (model_dir / "local_C.xgboost").write_bytes(content)
+    monkeypatch.setitem(MODELS, "LOCAL", {
+        "ion_types": ["C"], "fragmentation": "ead",
+        "xgboost_model_files": {"c": "local_C.xgboost"},
+        "model_hash": {"local_C.xgboost": hashlib.sha1(b"model bytes").hexdigest()},
+        "download_url": None,
+    })
+
+
+def _no_download(*args, **kwargs):
+    raise AssertionError("a local-only model must not be downloaded")
+
+
+def test_local_only_model_is_used_from_model_dir(monkeypatch, tmp_path):
+    _local_only_model(monkeypatch, tmp_path)
+    monkeypatch.setattr("urllib.request.urlretrieve", _no_download)
+    assert validate_model("LOCAL", tmp_path) == tmp_path
+
+
+@pytest.mark.parametrize("content", [None, b"other bytes"])
+def test_local_only_model_missing_or_changed_raises_without_download(monkeypatch, tmp_path, content):
+    _local_only_model(monkeypatch, tmp_path)
+    if content is None:
+        (tmp_path / "local_C.xgboost").unlink()
+    else:
+        (tmp_path / "local_C.xgboost").write_bytes(content)
+    monkeypatch.setattr("urllib.request.urlretrieve", _no_download)
+    with pytest.raises(exceptions.ModelFileNotFoundError, match="local_C.xgboost"):
+        validate_model("LOCAL", tmp_path)
+
+
+def test_model_with_download_url_is_fetched_from_it(monkeypatch, tmp_path):
+    hosted = tmp_path / "hosted"
+    hosted.mkdir()
+    _local_only_model(monkeypatch, hosted)
+    MODELS["LOCAL"]["download_url"] = hosted.as_uri()
+    model_dir = tmp_path / "models"
+    assert validate_model("LOCAL", model_dir) == model_dir
+    assert (model_dir / "local_C.xgboost").read_bytes() == b"model bytes"

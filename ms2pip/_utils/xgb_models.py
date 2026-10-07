@@ -1,4 +1,4 @@
-"""Utilities for handling XGBoost model files within the MS²PIP prediction framework."""
+"""Utilities for handling XGBoost model files within the MSÂ²PIP prediction framework."""
 
 import hashlib
 import logging
@@ -15,6 +15,8 @@ from ms2pip._utils.ion_types import is_c_terminal
 from ms2pip.constants import MODELS
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_DOWNLOAD = "default"  # Genesis, with Zenodo as fallback
 
 _MAX_PREDICTION_THREADS = 32
 
@@ -51,15 +53,29 @@ def validate_model(model: str, model_dir: str | Path | None = None) -> Path:
         MODELS[model]["xgboost_model_files"],
         MODELS[model]["model_hash"],
         model_dir,
+        MODELS[model].get("download_url", DEFAULT_DOWNLOAD),
     )
     return model_dir
 
 
-def _validate_requested_xgb_model(xgboost_model_files, xgboost_model_hashes, model_dir):
-    """Validate requested XGBoost models, and download if necessary."""
+
+def _validate_requested_xgb_model(xgboost_model_files, xgboost_model_hashes, model_dir,
+                                  download_url=DEFAULT_DOWNLOAD):
+    """Validate requested XGBoost models, and download if necessary.
+
+    ``download_url`` is the base URL to fetch missing files from, the default
+    MS²PIP hosts, or None for a model that is only available locally.
+    """
     for model_file in xgboost_model_files.values():
-        if not _check_model_presence(model_file, xgboost_model_hashes[model_file], model_dir):
-            _download_model(model_file, xgboost_model_hashes[model_file], model_dir)
+        if _check_model_presence(model_file, xgboost_model_hashes[model_file], model_dir):
+            continue
+        if download_url is None:
+            raise exceptions.ModelFileNotFoundError(
+                f"{model_file} is missing from {model_dir} or does not match its expected "
+                "SHA-1 hash. This model is not downloadable; copy its files into that "
+                "directory or pass model_dir."
+            )
+        _download_model(model_file, xgboost_model_hashes[model_file], model_dir, download_url)
 
 
 def load_xgb_models(
@@ -161,19 +177,24 @@ def _check_model_presence(model, model_hash, model_dir):
     return _check_model_integrity(filename, model_hash)
 
 
-def _download_model(model, model_hash, model_dir):
-    """Download the xgboost model from the Genesis server."""
+def _download_model(model, model_hash, model_dir, download_url=DEFAULT_DOWNLOAD):
+    """Download the xgboost model from the Genesis server, or from ``download_url``."""
     os.makedirs(model_dir, exist_ok=True)
     filename = os.path.join(model_dir, model)
 
     logger.info(f"Downloading {model} to {filename}...")
-    try:
-        urllib.request.urlretrieve(
-            f"https://genesis.ugent.be/uvpublicdata/ms2pip/{model}", filename
-        )
-    except Exception:
-        logger.warning("Falling back to Zenodo for model downloads.")
-        urllib.request.urlretrieve(f"https://zenodo.org/records/13270668/files/{model}", filename)
+    if download_url != DEFAULT_DOWNLOAD:
+        urllib.request.urlretrieve(f"{download_url.rstrip('/')}/{model}", filename)
+    else:
+        try:
+            urllib.request.urlretrieve(
+                f"https://genesis.ugent.be/uvpublicdata/ms2pip/{model}", filename
+            )
+        except Exception:
+            logger.warning("Falling back to Zenodo for model downloads.")
+            urllib.request.urlretrieve(
+                f"https://zenodo.org/records/13270668/files/{model}", filename
+            )
     if not _check_model_integrity(filename, model_hash):
         raise exceptions.InvalidXGBoostModelError()
 
