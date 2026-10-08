@@ -20,6 +20,10 @@ DEFAULT_DOWNLOAD = "default"  # Genesis, with Zenodo as fallback
 
 _MAX_PREDICTION_THREADS = 32
 
+# Model files already verified in this process, keyed by (path, size, mtime_ns), so the SHA-1 of
+# large files (the HCD2021 Y model is 888 MB) is computed once per process, not once per call.
+_verified_files: set[tuple[str, int, int]] = set()
+
 
 def validate_model(model: str, model_dir: str | Path | None = None) -> Path:
     """
@@ -82,6 +86,7 @@ def load_xgb_models(
     model_params: dict,
     model_dir,
     processes: int | None = None,
+    device: str = "cpu",
 ) -> dict:
     """
     Load XGBoost models from disk.
@@ -97,14 +102,29 @@ def load_xgb_models(
         Directory where model files are stored.
     processes
         Number of threads for XGBoost prediction. Capped internally.
+    device
+        XGBoost device for prediction: ``"cpu"`` (default), ``"cuda"`` or ``"cuda:N"``.
 
     """
-    os.environ.pop("CUDA_VISIBLE_DEVICES", None)  # Workaround for dmlc/xgboost#11283
+    _drop_cuda_visible_devices_if_hiding_all()
     nthread = min(
         processes if processes is not None else (os.cpu_count() or 1),
         _MAX_PREDICTION_THREADS,
     )
-    return _initialize_xgb_models(model_params["xgboost_model_files"], model_dir, nthread)
+    models = _initialize_xgb_models(model_params["xgboost_model_files"], model_dir, nthread)
+    if device != "cpu":
+        for booster in models.values():
+            booster.set_param({"device": device})
+    return models
+
+
+def _drop_cuda_visible_devices_if_hiding_all() -> None:
+    """Workaround for dmlc/xgboost#11283: XGBoost crashes on Windows when CUDA_VISIBLE_DEVICES
+    is -1 (all GPUs hidden). Only that setting is removed; a real device selection such as "1"
+    is kept, so a caller's (or scheduler's) GPU pinning still applies."""
+    value = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if value is not None and value.strip().startswith("-"):
+        del os.environ["CUDA_VISIBLE_DEVICES"]
 
 
 def predict_intensities(
@@ -174,7 +194,14 @@ def _check_model_presence(model, model_hash, model_dir):
     filename = os.path.join(model_dir, model)
     if not os.path.isfile(filename):
         return False
-    return _check_model_integrity(filename, model_hash)
+    stat = os.stat(filename)
+    key = (os.path.abspath(filename), stat.st_size, stat.st_mtime_ns)
+    if key in _verified_files:
+        return True
+    if not _check_model_integrity(filename, model_hash):
+        return False
+    _verified_files.add(key)
+    return True
 
 
 def _download_model(model, model_hash, model_dir, download_url=DEFAULT_DOWNLOAD):
