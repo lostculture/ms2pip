@@ -130,3 +130,49 @@ def test_correlate_plain_dict_is_terminal(tmp_path):
     r = next(r for r in results if r.internal)
     assert np.all(r.predicted_intensity["y"] == np.float32(-3.0))
     assert np.all(r.internal["predicted"]["yb"] == np.float32(-5.0))
+
+
+def test_correlate_single_astral_internal_and_spectra(tmp_path):
+    """correlate_single fills internal observed targets, so as_spectra and correlation_internal work."""
+    from ms2pip.core import correlate_single
+    from ms2pip.spectrum_input import read_spectrum_file
+    from psm_utils.io import read_file
+
+    model_dir = _dummy_models(tmp_path)
+    psms = {p.spectrum_id: p for p in read_file(str(DATA / "astral_small.tsv"), filetype="tsv")}
+    obs = next(s for s in read_spectrum_file(str(DATA / "astral_small.mgf")) if s.identifier in psms)
+    obs.peptidoform = psms[obs.identifier].peptidoform
+    r = correlate_single(obs, ms2_tolerance=10.0, ms2_tolerance_mode="ppm", model="Astral",
+                         model_dir=model_dir)
+    assert r.internal is not None
+    assert r.internal["observed"]["yb"].shape == r.internal["predicted"]["yb"].shape
+    assert r.correlation_internal is not None
+    pred, obs_spec = r.as_spectra()
+    assert any(a.startswith("yb[") for a in pred.annotations)
+    assert any(a.startswith("yb[") for a in obs_spec.annotations)
+
+
+def test_as_spectra_tolerates_internal_without_observed(tmp_path):
+    """A result with observed terminal intensities but predicted-only internal fragments."""
+    from psm_utils.io import read_file
+    from ms2pip.core import predict_batch
+
+    psms = read_file(str(DATA / "astral_small.tsv"), filetype="tsv")
+    r = next(r for r in predict_batch(psms, model="Astral", model_dir=_dummy_models(tmp_path)) if r.internal)
+    r.observed_intensity = {k: v.copy() for k, v in r.predicted_intensity.items()}
+    pred, obs = r.as_spectra()
+    assert len(pred.mz) > len(obs.mz)
+    assert any(a.startswith("yb[") for a in pred.annotations)
+    assert not any(a.startswith("yb[") for a in obs.annotations)
+    assert len(obs.mz) == len(obs.intensity) == len(obs.annotations)
+
+
+def test_internal_boosters_must_cover_internal_ion_types(tmp_path):
+    model_dir = _dummy_models(tmp_path)
+    with pytest.raises(ValueError, match="internal"):
+        _correlate_small(model_dir, xgb_models={"terminal": load_xgb_models(MODELS["Astral"], model_dir),
+                                                "internal": {}})
+    partial = {"yb": load_internal_xgb_models(MODELS["Astral"], model_dir)["yb"]}
+    with pytest.raises(ValueError, match="ya"):
+        _correlate_small(model_dir, xgb_models={"terminal": load_xgb_models(MODELS["Astral"], model_dir),
+                                                "internal": partial})

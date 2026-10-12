@@ -92,6 +92,12 @@ def _predict_internal_blocks(
     lengths = [len(b["s"]) for b in blocks]
     if boosters is None:
         boosters = load_internal_xgb_models(MODELS[model], model_dir, processes)
+    missing = [k.lower() for k in MODELS[model]["internal_ion_types"] if k.lower() not in boosters]
+    if missing:
+        raise ValueError(
+            f"Preloaded internal boosters for model {model} lack internal ion type(s) "
+            f"{', '.join(missing)}; pass one booster per internal ion type."
+        )
     matrix = np.vstack([b["features"] for b in blocks])
     split_at = np.cumsum(lengths)[:-1]
     per_type = {}
@@ -191,6 +197,27 @@ def _predict_batch_internal(
     return results
 
 
+def _extract_internal_observed(
+    spectra: list, proformas: list[str], params: dict, tolerance: float, tolerance_mode: str
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Observed (yb, ya) internal-fragment targets for preprocessed spectra (log2 scale)."""
+    from ms2rescore_rs import ms2pip_extract_internal_targets  # type: ignore[ty:unresolved-import]
+
+    # The Rust side requires ascending m/z; sort (stably) a copy if a spectrum is not.
+    mzs, ints = [], []
+    for spectrum in spectra:
+        mz = spectrum.mz.astype(np.float32)
+        inten = spectrum.intensity.astype(np.float32)
+        if np.any(np.diff(mz) < 0):
+            order = np.argsort(mz, kind="stable")
+            mz, inten = mz[order], inten[order]
+        mzs.append(mz)
+        ints.append(inten)
+    return ms2pip_extract_internal_targets(
+        mzs, ints, proformas, params["internal_max_mass"], tolerance, tolerance_mode.lower()
+    )
+
+
 def _validate_and_extract_targets(
     psm_spectrum_annotations: list[MatchedSpectrum],
     model: str,
@@ -250,24 +277,11 @@ def _validate_and_extract_targets(
     internal = None
     params = MODELS[model]
     if params.get("internal_ion_types"):
-        from ms2rescore_rs import (  # type: ignore[ty:unresolved-import]
-            ms2pip_extract_internal_targets,
-            ms2pip_internal_fragments,
-        )
+        from ms2rescore_rs import ms2pip_internal_fragments  # type: ignore[ty:unresolved-import]
 
         frags = ms2pip_internal_fragments(proformas, params["internal_max_mass"])
-        # The Rust side requires ascending m/z; sort (stably) if a spectrum is not.
-        mzs, ints = [], []
-        for m in valid_matches:
-            mz = m.spectrum.mz.astype(np.float32)
-            inten = m.spectrum.intensity.astype(np.float32)
-            if np.any(np.diff(mz) < 0):
-                order = np.argsort(mz, kind="stable")
-                mz, inten = mz[order], inten[order]
-            mzs.append(mz)
-            ints.append(inten)
-        observed = ms2pip_extract_internal_targets(
-            mzs, ints, proformas, params["internal_max_mass"], tolerance, tolerance_mode.lower()
+        observed = _extract_internal_observed(
+            [m.spectrum for m in valid_matches], proformas, params, tolerance, tolerance_mode
         )
         internal = [
             {
@@ -495,7 +509,7 @@ def _assemble_training_data(
     min_mz = params.get("min_fragment_mz")
     max_mz = params.get("max_fragment_mz")
     columns = ["psm_index"] + get_feature_names() + [f"target_{it}" for it in ion_types]
-    if min_mz:
+    if min_mz or max_mz:
         kept = [
             r for r in results if r.feature_vectors is not None and r.observed_intensity is not None
         ]
@@ -503,7 +517,8 @@ def _assemble_training_data(
             step = -1 if is_c_terminal(ion_type) else 1
             mz = np.concatenate([r.theoretical_mz[ion_type][::step] for r in kept])
             training_data[f"mz_{ion_type}"] = mz
-            training_data.loc[_outside_mz_range(mz, min_mz, max_mz), f"target_{ion_type}"] = np.nan
+            outside = _outside_mz_range(mz, min_mz or 0.0, max_mz)
+            training_data.loc[outside, f"target_{ion_type}"] = np.nan
         columns += [f"mz_{it}" for it in ion_types]
     training_data = training_data[columns]
     if not params.get("internal_ion_types"):
@@ -525,7 +540,7 @@ def _assemble_training_data(
     for key in ("yb", "ya"):
         mz = np.concatenate([r.internal["mz"][key] for r in rows])
         target = np.concatenate([r.internal["observed"][key] for r in rows]).astype(np.float64)
-        target[_outside_mz_range(mz, min_mz, max_mz)] = np.nan
+        target[_outside_mz_range(mz, min_mz or 0.0, max_mz)] = np.nan
         internal[f"target_{key}"], internal[f"mz_{key}"] = target, mz
     return training_data, internal
 
@@ -804,6 +819,7 @@ def correlate_single(
     ms2_tolerance: float = 0.02,
     ms2_tolerance_mode: str = "Da",
     model: str = "HCD",
+    model_dir: str | Path | None = None,
 ) -> ProcessingResult:
     """
     Correlate single observed spectrum with predicted intensities.\f
@@ -818,11 +834,15 @@ def correlate_single(
         Unit of the MS2 tolerance: ``"Da"`` or ``"ppm"``. By default, ``"Da"``.
     model
         Model to use for prediction. Default: "HCD".
+    model_dir
+        Directory with the XGBoost model files. Default: ``~/.ms2pip``.
 
     Returns
     -------
     result: ProcessingResult
-        Result with theoretical m/z, predicted intensity, observed intensity, and correlation.
+        Result with theoretical m/z, predicted intensity, observed intensity, and correlation
+        (and, for models with internal ion types, internal observed targets and
+        ``correlation_internal``).
 
     """
     if not isinstance(observed_spectrum.peptidoform, Peptidoform):
@@ -843,8 +863,15 @@ def correlate_single(
         seq_lens=[seq_len],
     )[0]
 
-    result = predict_single(observed_spectrum.peptidoform, model=model)
+    result = predict_single(observed_spectrum.peptidoform, model=model, model_dir=model_dir)
     result.observed_intensity = observed_intensity
+    if result.internal is not None:
+        # Same targets as _validate_and_extract_targets: preprocessed float32 log2 intensities.
+        proforma = proforma_to_mass_shift(observed_spectrum.peptidoform)
+        ((oyb, oya),) = _extract_internal_observed(
+            [preprocessed], [proforma], MODELS[model], ms2_tolerance, ms2_tolerance_mode
+        )
+        result.internal["observed"] = {"yb": oyb, "ya": oya}
 
     calculate_correlations([result], model)
     return result
@@ -977,7 +1004,8 @@ def download_models(models: list[str] | None = None, model_dir: str | Path | Non
     Parameters
     ----------
     models
-        List of models to download. If not specified, all models will be downloaded.
+        List of models to download. If not specified, all downloadable models are downloaded
+        (local-only models, ``download_url`` None, are skipped; naming one still validates it).
     model_dir
         Directory where XGBoost model files are to be stored. Default: ``~/.ms2pip``.
 
@@ -986,6 +1014,7 @@ def download_models(models: list[str] | None = None, model_dir: str | Path | Non
     model_dir = Path(model_dir).expanduser()
     model_dir.mkdir(parents=True, exist_ok=True)
 
+    explicit = bool(models)
     if not models:
         models = list(MODELS.keys())
 
@@ -993,6 +1022,9 @@ def download_models(models: list[str] | None = None, model_dir: str | Path | Non
         if model not in MODELS:
             raise exceptions.UnknownModelError(model)
         if "xgboost_model_files" not in MODELS[model]:
+            continue
+        if not explicit and "download_url" in MODELS[model] and MODELS[model]["download_url"] is None:
+            logger.info("Skipping %s: local-only model (no download URL)", model)
             continue
         logger.debug("Downloading %s model files", model)
         validate_model(model, model_dir)

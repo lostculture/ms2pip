@@ -63,3 +63,19 @@ def test_astral_one_internal_file_missing_is_untrained(tmp_path):
 
 def test_load_internal_empty_for_other_models(tmp_path):
     assert load_internal_xgb_models(MODELS["HCD2021"], tmp_path) == {}
+
+
+def test_download_models_without_list_skips_local_only_models(monkeypatch, tmp_path):
+    from ms2pip import core
+
+    seen = []
+    monkeypatch.setattr(core, "validate_model", lambda model, model_dir: seen.append(model))
+    core.download_models(model_dir=tmp_path)
+    assert "Astral" not in seen and "HCD2021" in seen
+
+
+def test_download_models_explicit_local_only_model_still_raises(tmp_path):
+    from ms2pip import core
+
+    with pytest.raises(exceptions.ModelFileNotFoundError):
+        core.download_models(["Astral"], model_dir=tmp_path)

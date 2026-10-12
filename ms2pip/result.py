@@ -70,28 +70,34 @@ class ProcessingResult(BaseModel):
         )
         pred_parts = [self.predicted_intensity[it] for it in ion_types] if self.predicted_intensity else None
         obs_parts = [self.observed_intensity[it] for it in ion_types] if self.observed_intensity else None
+        # Each side gets its own peak list: the internal block can carry predicted values
+        # without observed ones (e.g. predict_batch) or the other way round.
+        pred_mz, pred_ann = [mz], [annotations]
+        obs_mz, obs_ann = [mz], [annotations]
         if self.internal:
             block = self.internal
+            pred_block, obs_block = block.get("predicted"), block.get("observed")
             for key in block["mz"]:
-                mz = np.concatenate([mz, block["mz"][key]])
-                annotations = np.concatenate(
-                    [
-                        annotations,
-                        [internal_label(key, s, e) for s, e in zip(block["s"], block["e"])],
-                    ]
+                labels = np.array(
+                    [internal_label(key, s, e) for s, e in zip(block["s"], block["e"])], dtype=str
                 )
-                if pred_parts is not None:
-                    pred_parts.append(block["predicted"][key])
-                if obs_parts is not None:
-                    obs_parts.append(block["observed"][key])
-        peak_order = np.argsort(mz)
+                if pred_parts is not None and pred_block is not None:
+                    pred_mz.append(block["mz"][key])
+                    pred_ann.append(labels)
+                    pred_parts.append(pred_block[key])
+                if obs_parts is not None and obs_block is not None:
+                    obs_mz.append(block["mz"][key])
+                    obs_ann.append(labels)
+                    obs_parts.append(obs_block[key])
 
         if self.predicted_intensity:
+            mz_p, ann_p = np.concatenate(pred_mz), np.concatenate(pred_ann)
             pred_int = np.concatenate(pred_parts)
+            peak_order = np.argsort(mz_p)
             predicted = PredictedSpectrum(
-                mz=mz[peak_order],
+                mz=mz_p[peak_order],
                 intensity=pred_int[peak_order],
-                annotations=annotations[peak_order],
+                annotations=ann_p[peak_order],
                 peptidoform=self.psm.peptidoform if self.psm else None,
                 precursor_charge=self.psm.peptidoform.precursor_charge if self.psm else None,
             )
@@ -100,11 +106,13 @@ class ProcessingResult(BaseModel):
             predicted = None
 
         if self.observed_intensity:
+            mz_o, ann_o = np.concatenate(obs_mz), np.concatenate(obs_ann)
             obs_int = np.concatenate(obs_parts)
+            peak_order = np.argsort(mz_o)
             observed = ObservedSpectrum(
-                mz=mz[peak_order],
+                mz=mz_o[peak_order],
                 intensity=obs_int[peak_order],
-                annotations=annotations[peak_order],
+                annotations=ann_o[peak_order],
                 peptidoform=self.psm.peptidoform if self.psm else None,
                 precursor_charge=self.psm.peptidoform.precursor_charge if self.psm else None,
             )

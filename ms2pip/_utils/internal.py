@@ -53,6 +53,9 @@ def build_internal_features(site_matrix: np.ndarray, sequence: str, s: np.ndarra
         seq[e + 1] == b"P",
         s,
         n - 1 - e,
+        # seg_mass_frac. precursor_mass is the PSM peptidoform's theoretical_mass: training PSMs
+        # carry 4-decimal mass-shift ProForma (e.g. [+15.9949]), inference may carry the exact
+        # modification mass; the difference is ~1e-8 relative, negligible.
         mass / precursor_mass,
         n_isobaric,
         np.full(k, n),
