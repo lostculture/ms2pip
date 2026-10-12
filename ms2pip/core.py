@@ -312,13 +312,14 @@ def _predict_with_observed(
     all_mz = ms2pip_compute_theoretical_mz(proformas, ion_types, frag_model, "monoisotopic")
 
     logger.debug("Predicting intensities with XGBoost...")
+    terminal_models, internal_models = _split_xgb_models(xgb_models)
     predictions = predict_intensities(
         np.concatenate([f.reshape(-1, NUM_FEATURES) for f in all_features]),
         num_ions,
         MODELS[model],
         model_dir,
         processes=processes,
-        xgb_models=xgb_models,
+        xgb_models=terminal_models,
     )
     if internal is not None:
         _predict_internal_blocks(
@@ -328,7 +329,7 @@ def _predict_with_observed(
             model,
             model_dir,
             processes,
-            None,
+            internal_models,
         )
 
     results = [
@@ -757,6 +758,9 @@ def correlate(
         Pre-loaded XGBoost models for ``model`` (from
         :func:`ms2pip._utils.xgb_models.load_xgb_models`). Pass them when calling ``correlate``
         repeatedly, e.g. per chunk of a large PSM list, so the models are not reloaded each time.
+        For models with internal ion types (e.g. ``Astral``), pass
+        ``{"terminal": load_xgb_models(...), "internal": load_internal_xgb_models(...)}``;
+        a plain dict is taken as the terminal boosters (internal ones are then loaded per call).
 
     Returns
     -------
