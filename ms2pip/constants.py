@@ -204,7 +204,21 @@ MODELS = {
             for k in ["y", "b", "a", "y2", "b2", "y-h2o", "b-h2o", "y-nh3", "b-nh3", "a-nh3", "a-h2o"]
         },
         "internal_xgboost_model_files": {k: f"model_ASTRAL_{k.upper()}.xgboost" for k in ["yb", "ya"]},
-        "model_hash": {},
+        "model_hash": {
+            "model_ASTRAL_Y.xgboost": "ebf5a80336cedb66429ae5b2419007d6bab087be",
+            "model_ASTRAL_B.xgboost": "61414fe0afcf192019a21a1de843982e97da3b67",
+            "model_ASTRAL_A.xgboost": "50a23c88ffcc63a68c181bb1a8addda996b220c4",
+            "model_ASTRAL_Y2.xgboost": "3f49c50e25268f4dc0826bff582b7586fcf9ea2e",
+            "model_ASTRAL_B2.xgboost": "77562d657f1d153726492cbe46947a1f7e81cd1d",
+            "model_ASTRAL_YmH2O.xgboost": "b256982d8ab182591657edf261f07f7b30b53072",
+            "model_ASTRAL_BmH2O.xgboost": "e3def55a7ce975b84be225349dc0f6ca94f6028c",
+            "model_ASTRAL_YmNH3.xgboost": "6beb6d40a0ec2ca040741bf0873cce97d7d6b571",
+            "model_ASTRAL_BmNH3.xgboost": "ae498ef65233b197d5c143c36d2c60e71202ae71",
+            "model_ASTRAL_AmNH3.xgboost": "95ce47b175a20874c452d2ab48d3267381f6659e",
+            "model_ASTRAL_AmH2O.xgboost": "11308207317d0db12ca21305237b53a0a831863f",
+            "model_ASTRAL_YB.xgboost": "39a26d74e0d95321b9cc93bc2519e903963e6fbd",
+            "model_ASTRAL_YA.xgboost": "489bcba0dc00133b15867886e464869734feead3",
+        },
     },
 }
 
