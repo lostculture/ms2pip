@@ -42,7 +42,7 @@ def _spectrum(precursor_charge=2):
 
 def test_ead_model_ion_types():
     assert MODELS["EAD"]["fragmentation"] == "ead_ext"
-    parsed = [parse_ion_type(it) for it in MODELS["EAD"]["ion_types"]]
+    parsed = [parse_ion_type(it)[:3] for it in MODELS["EAD"]["ion_types"]]
     assert parsed == [("b", 0, 1), ("y", 0, 1), ("c", 0, 1), ("z", 1, 1)]
 
 

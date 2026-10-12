@@ -432,9 +432,10 @@ class Spectronaut(_Writer):
             for ion_type in intensities
         }
         for ion_type in result.predicted_intensity:  # type: ignore[ty:not-iterable]
-            fragment_type, variant, charge = parse_ion_type(ion_type)
-            if variant:
-                # Spectronaut has no notation for hydrogen-shift variants (z+1, c-1, ...).
+            fragment_type, variant, charge, loss = parse_ion_type(ion_type)
+            if variant or loss:
+                # Spectronaut has no notation for hydrogen-shift variants (z+1, c-1, ...)
+                # or for neutral-loss keys written here (b-h2o).
                 warnings.warn(
                     f"Spectronaut output cannot express ion type {ion_type!r}; skipping it.",
                     stacklevel=2,

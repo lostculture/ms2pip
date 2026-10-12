@@ -4,7 +4,13 @@ import numpy as np
 import pytest
 from psm_utils import PSM, Peptidoform
 
-from ms2pip._utils.ion_types import is_c_terminal, parse_ion_type
+from ms2pip._utils.ion_types import (
+    annotation_label,
+    internal_label,
+    is_c_terminal,
+    is_internal,
+    parse_ion_type,
+)
 from ms2pip._utils.xgb_models import predict_intensities
 from ms2pip.result import ProcessingResult
 
@@ -12,13 +18,13 @@ from ms2pip.result import ProcessingResult
 @pytest.mark.parametrize(
     "key, expected",
     [
-        ("b", ("b", 0, 1)),
-        ("y2", ("y", 0, 2)),
-        ("z+1", ("z", 1, 1)),
-        ("z+2", ("z", 2, 1)),
-        ("z+1_2", ("z", 1, 2)),
-        ("c-1", ("c", -1, 1)),
-        ("C-1", ("c", -1, 1)),
+        ("b", ("b", 0, 1, "")),
+        ("y2", ("y", 0, 2, "")),
+        ("z+1", ("z", 1, 1, "")),
+        ("z+2", ("z", 2, 1, "")),
+        ("z+1_2", ("z", 1, 2, "")),
+        ("c-1", ("c", -1, 1, "")),
+        ("C-1", ("c", -1, 1, "")),
     ],
 )
 def test_parse_ion_type(key, expected):
@@ -109,3 +115,26 @@ def test_as_spectra_annotates_variant_ions():
     assert sorted(predicted.annotations) == sorted(
         ["z1", "z2", "z3", "z1+1^2", "z2+1^2", "z3+1^2"]
     )
+
+
+@pytest.mark.parametrize("key, parsed", [
+    ("b-h2o", ("b", 0, 1, "h2o")), ("y-nh3", ("y", 0, 1, "nh3")), ("y2-h2o", ("y", 0, 2, "h2o")),
+    ("a", ("a", 0, 1, "")), ("z+1", ("z", 1, 1, "")), ("y2", ("y", 0, 2, "")),
+])
+def test_parse_loss_keys(key, parsed):
+    assert parse_ion_type(key) == parsed
+
+
+@pytest.mark.parametrize("bad", ["b-co", "z+1-h2o", "yb2", "b-"])
+def test_parse_rejects(bad):
+    with pytest.raises(ValueError):
+        parse_ion_type(bad)
+
+
+def test_internal_keys():
+    assert is_internal("yb") and is_internal("YA")
+    assert not is_internal("y") and not is_internal("b-h2o")
+    assert not is_c_terminal("yb")
+    assert is_c_terminal("y-nh3") and not is_c_terminal("a-h2o")
+    assert annotation_label("b-h2o", 3) == "b3-H2O"
+    assert internal_label("yb", 3, 5) == "yb[3-5]"
