@@ -32,3 +32,43 @@ def test_extract_targets_loss_keys():
     assert targets["b-h2o"][1] == -1.0
     assert targets["b"][1] == -2.0
     assert targets["y"][0] < -9.9  # floor
+
+
+from ms2rescore_rs import ms2pip_extract_internal_targets, ms2pip_internal_fragments
+
+
+def test_internal_fragments_binding():
+    s, e, n_iso, mz_yb, mz_ya = ms2pip_internal_fragments(["PEPTIDEK/2"], 700.0)[0]
+    assert (s[0], e[0]) == (1, 2)
+    np.testing.assert_allclose(mz_yb[0], E + P + PROTON, atol=1e-3)
+    np.testing.assert_allclose(mz_ya[0], E + P - CO + PROTON, atol=1e-3)
+    assert s.dtype == np.int32 and mz_yb.dtype == np.float32
+    assert len(s) == len(e) == len(n_iso) == len(mz_yb) == len(mz_ya)
+
+
+def test_no_segments_for_short_peptides():
+    s, e, n_iso, mz_yb, mz_ya = ms2pip_internal_fragments(["PEK/2"], 700.0)[0]
+    assert len(s) == 0 and len(mz_yb) == 0
+
+
+def test_extract_internal_targets():
+    yb = E + P + PROTON
+    mz = np.array([yb, 600.0], dtype=np.float32)
+    out = ms2pip_extract_internal_targets([mz], [np.array([-1.5, -2.0], dtype=np.float32)], ["PEPTIDEK/2"],
+                                          700.0, 10.0, "ppm")[0]
+    obs_yb, obs_ya = out
+    assert obs_yb[0] == np.float32(-1.5)
+    assert obs_ya[0] < -9.9
+
+
+def test_extract_handles_empty_spectrum():
+    obs_yb, obs_ya = ms2pip_extract_internal_targets([np.zeros(0, np.float32)], [np.zeros(0, np.float32)],
+                                                     ["PEPTIDEK/2"], 700.0, 10.0, "ppm")[0]
+    assert len(obs_yb) > 0 and np.all(obs_yb < -9.9)
+
+
+def test_extract_rejects_unsorted_mz():
+    import pytest
+    with pytest.raises(Exception, match="sorted"):
+        ms2pip_extract_internal_targets([np.array([600.0, 300.0], np.float32)], [np.zeros(2, np.float32)],
+                                        ["PEPTIDEK/2"], 700.0, 10.0, "ppm")
