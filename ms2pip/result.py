@@ -36,6 +36,9 @@ class ProcessingResult(BaseModel):
         Pearson correlation between predicted and observed intensities.
     feature_vectors
         Feature vectors for model training.
+    internal
+        Internal fragments (models with internal_ion_types): s, e, n_isobaric, mz, observed,
+        predicted, features.
     """
 
     psm_index: int
@@ -45,6 +48,7 @@ class ProcessingResult(BaseModel):
     observed_intensity: dict[str, np.ndarray] | None = None
     correlation: float | None = None
     feature_vectors: np.ndarray | None = None
+    internal: dict | None = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def as_spectra(self) -> tuple[PredictedSpectrum | None, ObservedSpectrum | None]:

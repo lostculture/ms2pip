@@ -121,20 +121,29 @@ def _validate_and_extract_targets(
     psm_spectrum_annotations: list[MatchedSpectrum],
     model: str,
     processes: int | None = None,
+    tolerance: float = 0.02,
+    tolerance_mode: str = "Da",
 ) -> tuple[
-    list[MatchedSpectrum], list[ProcessingResult], list[dict], list[str], list[int]
+    list[MatchedSpectrum],
+    list[ProcessingResult],
+    list[dict],
+    list[str],
+    list[int],
+    list[dict] | None,
 ]:
     """
     Filter valid PSMs, extract observed targets, and prepare proformas/num_ions.
 
-    Returns ``(valid_matches, skipped_results, all_targets, proformas, num_ions)``.
+    Returns ``(valid_matches, skipped_results, all_targets, proformas, num_ions, internal)``.
+    ``internal`` is None unless the model has ``internal_ion_types``; then it holds one dict per
+    valid PSM (s, e, n_isobaric, mz, observed).
     """
     ion_types = [it.lower() for it in MODELS[model]["ion_types"]]
 
     _set_rayon_threads(processes)
 
     if not psm_spectrum_annotations:
-        return [], [], [], [], []
+        return [], [], [], [], [], None
 
     # Validate and filter
     psms_for_validation = PSMList(psm_list=[m.psm for m in psm_spectrum_annotations])
@@ -152,6 +161,8 @@ def _validate_and_extract_targets(
         if not m.psm.peptidoform.precursor_charge:
             m.psm.peptidoform.precursor_charge = m.spectrum.precursor_charge  # type: ignore[ty:invalid-assignment]
 
+    proformas = [proforma_to_mass_shift(m.psm.peptidoform) for m in valid_matches]
+
     # Extract targets from annotations (single batch Rust call)
     all_targets = ms2pip_extract_targets(
         annotated_spectra=[m.annotated_spectrum for m in valid_matches],
@@ -160,10 +171,42 @@ def _validate_and_extract_targets(
         seq_lens=[len(m.psm.peptidoform.parsed_sequence) for m in valid_matches],
     )
 
-    proformas = [proforma_to_mass_shift(m.psm.peptidoform) for m in valid_matches]
     num_ions = [len(m.psm.peptidoform.parsed_sequence) - 1 for m in valid_matches]
 
-    return valid_matches, skipped_results, all_targets, proformas, num_ions
+    internal = None
+    params = MODELS[model]
+    if params.get("internal_ion_types"):
+        from ms2rescore_rs import (  # type: ignore[ty:unresolved-import]
+            ms2pip_extract_internal_targets,
+            ms2pip_internal_fragments,
+        )
+
+        frags = ms2pip_internal_fragments(proformas, params["internal_max_mass"])
+        # The Rust side requires ascending m/z; sort (stably) if a spectrum is not.
+        mzs, ints = [], []
+        for m in valid_matches:
+            mz = m.spectrum.mz.astype(np.float32)
+            inten = m.spectrum.intensity.astype(np.float32)
+            if np.any(np.diff(mz) < 0):
+                order = np.argsort(mz, kind="stable")
+                mz, inten = mz[order], inten[order]
+            mzs.append(mz)
+            ints.append(inten)
+        observed = ms2pip_extract_internal_targets(
+            mzs, ints, proformas, params["internal_max_mass"], tolerance, tolerance_mode.lower()
+        )
+        internal = [
+            {
+                "s": s,
+                "e": e,
+                "n_isobaric": n,
+                "mz": {"yb": yb, "ya": ya},
+                "observed": {"yb": oyb, "ya": oya},
+            }
+            for (s, e, n, yb, ya), (oyb, oya) in zip(frags, observed)
+        ]
+
+    return valid_matches, skipped_results, all_targets, proformas, num_ions, internal
 
 
 def _predict_with_observed(
@@ -171,14 +214,18 @@ def _predict_with_observed(
     model: str,
     model_dir: str | Path | None = None,
     processes: int | None = None,
+    tolerance: float = 0.02,
+    tolerance_mode: str = "Da",
 ) -> list[ProcessingResult]:
     """Compute features, m/z, XGBoost predictions, and observed targets for matched spectra."""
     model_dir = validate_model(model, model_dir)
     ion_types = [it.lower() for it in MODELS[model]["ion_types"]]
     frag_model = MODELS[model]["fragmentation"]
 
-    valid_matches, skipped_results, all_targets, proformas, num_ions = (
-        _validate_and_extract_targets(psm_spectrum_annotations, model, processes)
+    valid_matches, skipped_results, all_targets, proformas, num_ions, _ = (
+        _validate_and_extract_targets(
+            psm_spectrum_annotations, model, processes, tolerance, tolerance_mode
+        )
     )
     if not valid_matches:
         return skipped_results
@@ -216,13 +263,17 @@ def _extract_observations(
     psm_spectrum_annotations: list[MatchedSpectrum],
     model: str,
     processes: int | None = None,
+    tolerance: float = 0.02,
+    tolerance_mode: str = "Da",
 ) -> list[ProcessingResult]:
     """Compute theoretical m/z and extract observed targets (no predictions)."""
     ion_types = [it.lower() for it in MODELS[model]["ion_types"]]
     frag_model = MODELS[model]["fragmentation"]
 
-    valid_matches, skipped_results, all_targets, proformas, _ = (
-        _validate_and_extract_targets(psm_spectrum_annotations, model, processes)
+    valid_matches, skipped_results, all_targets, proformas, _, _ = (
+        _validate_and_extract_targets(
+            psm_spectrum_annotations, model, processes, tolerance, tolerance_mode
+        )
     )
     if not valid_matches:
         return skipped_results
@@ -247,10 +298,19 @@ def _extract_training_data(
     psm_spectrum_annotations: list[MatchedSpectrum],
     model: str,
     processes: int | None = None,
+    tolerance: float = 0.02,
+    tolerance_mode: str = "Da",
 ) -> list[ProcessingResult]:
-    """Compute features and extract observed targets for model training (no m/z or predictions)."""
-    valid_matches, skipped_results, all_targets, proformas, _ = (
-        _validate_and_extract_targets(psm_spectrum_annotations, model, processes)
+    """
+    Compute features and extract observed targets for model training (no predictions).
+
+    Theoretical m/z is only added for models with ``min_fragment_mz``, and internal fragments
+    for models with ``internal_ion_types``.
+    """
+    valid_matches, skipped_results, all_targets, proformas, _, internal = (
+        _validate_and_extract_targets(
+            psm_spectrum_annotations, model, processes, tolerance, tolerance_mode
+        )
     )
     if not valid_matches:
         return skipped_results
@@ -258,15 +318,45 @@ def _extract_training_data(
     logger.debug("Computing features for %d peptides...", len(proformas))
     all_features = ms2pip_compute_features(proformas)
 
-    results = [
-        ProcessingResult(
-            psm_index=m.psm_index,
-            psm=m.psm,
-            observed_intensity=all_targets[i],
-            feature_vectors=all_features[i].reshape(-1, NUM_FEATURES),
+    params = MODELS[model]
+    mz_all = (
+        ms2pip_compute_theoretical_mz(
+            proformas,
+            [it.lower() for it in params["ion_types"]],
+            params["fragmentation"],
+            "monoisotopic",
         )
-        for i, m in enumerate(valid_matches)
-    ]
+        if params.get("min_fragment_mz")
+        else None
+    )
+
+    results = []
+    for i, m in enumerate(valid_matches):
+        if internal is not None:
+            from ms2pip._utils.internal import build_internal_features
+
+            pep = m.psm.peptidoform
+            block = internal[i]
+            block["features"] = build_internal_features(
+                all_features[i].reshape(-1, NUM_FEATURES),
+                pep.sequence,
+                block["s"],
+                block["e"],
+                block["n_isobaric"],
+                block["mz"]["yb"],
+                pep.theoretical_mass,
+                pep.precursor_charge,
+            )
+        results.append(
+            ProcessingResult(
+                psm_index=m.psm_index,
+                psm=m.psm,
+                theoretical_mz=mz_all[i] if mz_all is not None else None,
+                observed_intensity=all_targets[i],
+                feature_vectors=all_features[i].reshape(-1, NUM_FEATURES),
+                internal=internal[i] if internal is not None else None,
+            )
+        )
     results.extend(skipped_results)
     return results
 
@@ -283,8 +373,14 @@ def _into_batches(iterable, batch_size: int) -> Generator[list, None, None]:
         yield batch
 
 
-def _assemble_training_data(results: list[ProcessingResult], model: str) -> pd.DataFrame:
-    """Assemble training data from results list to single pandas DataFrame."""
+def _assemble_training_data(
+    results: list[ProcessingResult], model: str
+) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Assemble training data from results list into a pandas DataFrame.
+
+    Models with ``internal_ion_types`` return ``(terminal_df, internal_df)``.
+    """
     from ms2pip._utils.feature_names import get_feature_names
 
     ion_types = [it.lower() for it in MODELS[model]["ion_types"]]
@@ -311,11 +407,42 @@ def _assemble_training_data(results: list[ProcessingResult], model: str) -> pd.D
             ]
         )
 
-    training_data = training_data[
-        ["psm_index"] + get_feature_names() + [f"target_{it}" for it in ion_types]
-    ]
+    params = MODELS[model]
+    min_mz = params.get("min_fragment_mz")
+    columns = ["psm_index"] + get_feature_names() + [f"target_{it}" for it in ion_types]
+    if min_mz:
+        kept = [
+            r for r in results if r.feature_vectors is not None and r.observed_intensity is not None
+        ]
+        for ion_type in ion_types:
+            step = -1 if is_c_terminal(ion_type) else 1
+            mz = np.concatenate([r.theoretical_mz[ion_type][::step] for r in kept])
+            training_data[f"mz_{ion_type}"] = mz
+            training_data.loc[(mz < min_mz) | (mz == 0), f"target_{ion_type}"] = np.nan
+        columns += [f"mz_{it}" for it in ion_types]
+    training_data = training_data[columns]
+    if not params.get("internal_ion_types"):
+        return training_data
 
-    return training_data
+    from ms2pip._utils.internal import internal_feature_names
+
+    rows = [r for r in results if r.internal is not None]
+    internal = pd.DataFrame(
+        np.vstack([r.internal["features"] for r in rows]), columns=internal_feature_names()
+    )
+    internal.insert(
+        0,
+        "psm_index",
+        np.concatenate([np.repeat(r.psm_index, len(r.internal["s"])) for r in rows]),
+    )
+    for i, col in enumerate(["s", "e", "n_isobaric"], start=1):
+        internal.insert(i, col, np.concatenate([r.internal[col] for r in rows]))
+    for key in ("yb", "ya"):
+        mz = np.concatenate([r.internal["mz"][key] for r in rows])
+        target = np.concatenate([r.internal["observed"][key] for r in rows]).astype(np.float64)
+        target[(mz < min_mz) | (mz == 0)] = np.nan
+        internal[f"target_{key}"], internal[f"mz_{key}"] = target, mz
+    return training_data, internal
 
 
 def _add_im_rt(
@@ -551,7 +678,14 @@ def correlate(
     )
 
     logger.info("Processing spectra and peptides...")
-    results = _predict_with_observed(matched, model, model_dir, processes=processes)
+    results = _predict_with_observed(
+        matched,
+        model,
+        model_dir,
+        processes=processes,
+        tolerance=ms2_tolerance,
+        tolerance_mode=ms2_tolerance_mode,
+    )
 
     if compute_correlations:
         logger.info("Computing correlations")
@@ -654,7 +788,8 @@ def get_training_data(
     Returns
     -------
     features
-        :py:class:`pandas.DataFrame` with feature vectors and targets.
+        :py:class:`pandas.DataFrame` with feature vectors and targets. For models with internal
+        ion types (Astral), a tuple ``(terminal_df, internal_df)``.
 
     """
     psm_list = read_psms(psms, filetype=psm_filetype)
@@ -664,7 +799,13 @@ def get_training_data(
         psm_list, spectrum_file, spectrum_id_pattern, model, ms2_tolerance, ms2_tolerance_mode
     )
 
-    results = _extract_training_data(matched, model, processes=processes)
+    results = _extract_training_data(
+        matched,
+        model,
+        processes=processes,
+        tolerance=ms2_tolerance,
+        tolerance_mode=ms2_tolerance_mode,
+    )
 
     logger.info("Assembling training data in DataFrame...")
     return _assemble_training_data(results, model)
@@ -719,7 +860,13 @@ def annotate_spectra(
         psm_list, spectrum_file, spectrum_id_pattern, model, ms2_tolerance, ms2_tolerance_mode
     )
 
-    return _extract_observations(matched, model, processes=processes)
+    return _extract_observations(
+        matched,
+        model,
+        processes=processes,
+        tolerance=ms2_tolerance,
+        tolerance_mode=ms2_tolerance_mode,
+    )
 
 
 def download_models(models: list[str] | None = None, model_dir: str | Path | None = None):

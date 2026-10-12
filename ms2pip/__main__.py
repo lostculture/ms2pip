@@ -190,6 +190,9 @@ def get_training_data(*args, **kwargs):
 
     # Write output
     logger.info(f"Writing training data to {output_name}")
+    if isinstance(training_data, tuple):
+        training_data, internal_data = training_data
+        internal_data.reset_index(drop=True).to_feather(output_name.with_suffix(".internal.feather"))
     training_data.to_feather(output_name)
 
 
