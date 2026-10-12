@@ -204,6 +204,7 @@ MODELS = {
             for k in ["y", "b", "a", "y2", "b2", "y-h2o", "b-h2o", "y-nh3", "b-nh3", "a-nh3", "a-h2o"]
         },
         "internal_xgboost_model_files": {k: f"model_ASTRAL_{k.upper()}.xgboost" for k in ["yb", "ya"]},
+        "download_url": None,
         "model_hash": {
             "model_ASTRAL_Y.xgboost": "ebf5a80336cedb66429ae5b2419007d6bab087be",
             "model_ASTRAL_B.xgboost": "61414fe0afcf192019a21a1de843982e97da3b67",
