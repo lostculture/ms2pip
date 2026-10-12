@@ -188,6 +188,22 @@ MODELS = {
         },
         "download_url": "https://github.com/lostculture/ms2pip/releases/download/ead-model-20261007",
     },
+    # Orbitrap Astral HCD (Astral_ms2pip, MSI-476): terminal a/b/y with 2+ and H2O/NH3 losses, plus
+    # internal yb/ya fragments (< 700 Da) indexed by segment. Pairs with the Mascot instrument ASTRAL-HCD.
+    # Fragments below min_fragment_mz (the Astral MS2 scan start) are excluded from training and scoring.
+    "Astral": {
+        "ion_types": ["Y", "B", "A", "Y2", "B2", "Y-H2O", "B-H2O", "Y-NH3", "B-NH3", "A-NH3", "A-H2O"],
+        "internal_ion_types": ["YB", "YA"],
+        "fragmentation": "astral_hcd",
+        "internal_max_mass": 700.0,
+        "min_fragment_mz": 150.0,
+        "xgboost_model_files": {
+            k: f"model_ASTRAL_{k.upper().replace('+', 'p').replace('-', 'm')}.xgboost"
+            for k in ["y", "b", "a", "y2", "b2", "y-h2o", "b-h2o", "y-nh3", "b-nh3", "a-nh3", "a-h2o"]
+        },
+        "internal_xgboost_model_files": {k: f"model_ASTRAL_{k.upper()}.xgboost" for k in ["yb", "ya"]},
+        "model_hash": {},
+    },
 }
 
 

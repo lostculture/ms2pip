@@ -50,7 +50,7 @@ def validate_model(model: str, model_dir: str | Path | None = None) -> Path:
         )
     logger.debug("Using %s model", model)
     _validate_requested_xgb_model(
-        MODELS[model]["xgboost_model_files"],
+        {**MODELS[model]["xgboost_model_files"], **MODELS[model].get("internal_xgboost_model_files", {})},
         MODELS[model]["model_hash"],
         model_dir,
         MODELS[model].get("download_url", DEFAULT_DOWNLOAD),
@@ -67,6 +67,14 @@ def _validate_requested_xgb_model(xgboost_model_files, xgboost_model_hashes, mod
     MS²PIP hosts, or None for a model that is only available locally.
     """
     for model_file in xgboost_model_files.values():
+        if model_file not in xgboost_model_hashes:
+            # No known hash (model not released yet): accept a local file as is, never download.
+            if not os.path.isfile(os.path.join(model_dir, model_file)):
+                raise exceptions.UntrainedModelError(
+                    f"{model_file} is not in {model_dir} and this model has no released "
+                    "file yet (no hash to download or verify against)."
+                )
+            continue
         if _check_model_presence(model_file, xgboost_model_hashes[model_file], model_dir):
             continue
         if download_url is None:
@@ -82,6 +90,7 @@ def load_xgb_models(
     model_params: dict,
     model_dir,
     processes: int | None = None,
+    device: str = "cpu",
 ) -> dict:
     """
     Load XGBoost models from disk.
@@ -97,6 +106,8 @@ def load_xgb_models(
         Directory where model files are stored.
     processes
         Number of threads for XGBoost prediction. Capped internally.
+    device
+        XGBoost device, e.g. ``"cpu"`` or ``"cuda"``.
 
     """
     os.environ.pop("CUDA_VISIBLE_DEVICES", None)  # Workaround for dmlc/xgboost#11283
@@ -104,7 +115,24 @@ def load_xgb_models(
         processes if processes is not None else (os.cpu_count() or 1),
         _MAX_PREDICTION_THREADS,
     )
-    return _initialize_xgb_models(model_params["xgboost_model_files"], model_dir, nthread)
+    return _initialize_xgb_models(
+        model_params["xgboost_model_files"], model_dir, nthread, device=device
+    )
+
+
+def load_internal_xgb_models(
+    model_params: dict, model_dir, processes: int | None = None, device: str = "cpu"
+) -> dict:
+    """Boosters for a model's internal ion types (yb, ya); empty for models without them."""
+    files = model_params.get("internal_xgboost_model_files") or {}
+    if not files:
+        return {}
+    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    nthread = min(
+        processes if processes is not None else (os.cpu_count() or 1),
+        _MAX_PREDICTION_THREADS,
+    )
+    return _initialize_xgb_models(files, model_dir, nthread, device=device)
 
 
 def predict_intensities(
@@ -215,14 +243,14 @@ def _check_model_integrity(filename, model_hash):
         return False
 
 
-def _initialize_xgb_models(xgboost_model_files, model_dir, nthread) -> dict:
+def _initialize_xgb_models(xgboost_model_files, model_dir, nthread, device="cpu") -> dict:
     """Initialize xgboost models and return them in a dict with ion types as keys."""
     xgb.set_config(verbosity=0)
     xgboost_models = {}
     for ion_type in xgboost_model_files.keys():
         model_file = os.path.join(model_dir, xgboost_model_files[ion_type])
         logger.debug(f"Initializing model from file: `{model_file}`")
-        xgb_model = xgb.Booster({"nthread": nthread})
+        xgb_model = xgb.Booster({"nthread": nthread, "device": device})
         xgb_model.load_model(model_file)
         xgboost_models[ion_type] = xgb_model
     return xgboost_models
