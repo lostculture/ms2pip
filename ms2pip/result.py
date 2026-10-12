@@ -9,7 +9,7 @@ import numpy as np
 from psm_utils import PSM
 from pydantic import BaseModel, ConfigDict
 
-from ms2pip._utils.ion_types import annotation_label
+from ms2pip._utils.ion_types import annotation_label, internal_label
 from ms2pip.correlation import pearson
 from ms2pip.spectrum import ObservedSpectrum, PredictedSpectrum
 
@@ -34,6 +34,8 @@ class ProcessingResult(BaseModel):
         Dict mapping ion type to observed intensity array.
     correlation
         Pearson correlation between predicted and observed intensities.
+    correlation_internal
+        Pearson correlation over internal fragments (models with internal ion types).
     feature_vectors
         Feature vectors for model training.
     internal
@@ -47,6 +49,7 @@ class ProcessingResult(BaseModel):
     predicted_intensity: dict[str, np.ndarray] | None = None
     observed_intensity: dict[str, np.ndarray] | None = None
     correlation: float | None = None
+    correlation_internal: float | None = None
     feature_vectors: np.ndarray | None = None
     internal: dict | None = None
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -65,10 +68,26 @@ class ProcessingResult(BaseModel):
                 for it in ion_types
             ]
         )
+        pred_parts = [self.predicted_intensity[it] for it in ion_types] if self.predicted_intensity else None
+        obs_parts = [self.observed_intensity[it] for it in ion_types] if self.observed_intensity else None
+        if self.internal:
+            block = self.internal
+            for key in block["mz"]:
+                mz = np.concatenate([mz, block["mz"][key]])
+                annotations = np.concatenate(
+                    [
+                        annotations,
+                        [internal_label(key, s, e) for s, e in zip(block["s"], block["e"])],
+                    ]
+                )
+                if pred_parts is not None:
+                    pred_parts.append(block["predicted"][key])
+                if obs_parts is not None:
+                    obs_parts.append(block["observed"][key])
         peak_order = np.argsort(mz)
 
         if self.predicted_intensity:
-            pred_int = np.concatenate([self.predicted_intensity[it] for it in ion_types])
+            pred_int = np.concatenate(pred_parts)
             predicted = PredictedSpectrum(
                 mz=mz[peak_order],
                 intensity=pred_int[peak_order],
@@ -81,7 +100,7 @@ class ProcessingResult(BaseModel):
             predicted = None
 
         if self.observed_intensity:
-            obs_int = np.concatenate([self.observed_intensity[it] for it in ion_types])
+            obs_int = np.concatenate(obs_parts)
             observed = ObservedSpectrum(
                 mz=mz[peak_order],
                 intensity=obs_int[peak_order],
@@ -132,17 +151,45 @@ class ProcessingResult(BaseModel):
         return ax
 
 
-def calculate_correlations(results: list[ProcessingResult]) -> None:
-    """Calculate and add Pearson correlations to list of results."""
+def mask_low_mz(
+    values: dict[str, np.ndarray], mz: dict[str, np.ndarray], min_mz: float
+) -> dict[str, np.ndarray]:
+    """Keep the positions whose theoretical m/z is generated (> 0) and at or above min_mz."""
+    return {k: v[(mz[k] > 0) & (mz[k] >= min_mz)] for k, v in values.items()}
+
+
+def calculate_correlations(results: list[ProcessingResult], model: str | None = None) -> None:
+    """
+    Calculate and add Pearson correlations to list of results.
+
+    For models with ``min_fragment_mz``, positions below it (or not generated) are excluded.
+    Internal fragments get their own ``correlation_internal``.
+    """
     # TODO: Consider nan values? https://github.com/CompOmics/ms2pip/pull/214/changes#diff-5f77421a48cf8f17c5b83ed031897ce8076e2f52c0028aa6f4294a34ba3b3305R115-R123
+    from ms2pip.constants import MODELS
+
+    min_mz = (MODELS.get(model) or {}).get("min_fragment_mz") if model else None
     for result in results:
         if result.predicted_intensity is None or result.observed_intensity is None:
             continue
         # Pair ion types by name: the observed dict's order can differ (Rust HashMap).
         ion_types = list(result.predicted_intensity)
-        pred_int = np.concatenate([result.predicted_intensity[it] for it in ion_types])
-        obs_int = np.concatenate([result.observed_intensity[it] for it in ion_types])
-        result.correlation = pearson(pred_int, obs_int)
+        pred, obs = result.predicted_intensity, result.observed_intensity
+        if min_mz and result.theoretical_mz:
+            pred = mask_low_mz(pred, result.theoretical_mz, min_mz)
+            obs = mask_low_mz({k: obs[k] for k in ion_types}, result.theoretical_mz, min_mz)
+        result.correlation = pearson(
+            np.concatenate([pred[it] for it in ion_types]),
+            np.concatenate([obs[it] for it in ion_types]),
+        )
+        block = result.internal
+        if block and block.get("predicted") is not None and block.get("observed") is not None:
+            keys = list(block["predicted"])
+            ip = mask_low_mz(block["predicted"], block["mz"], min_mz or 0.0)
+            io = mask_low_mz({k: block["observed"][k] for k in keys}, block["mz"], min_mz or 0.0)
+            result.correlation_internal = pearson(
+                np.concatenate([ip[k] for k in keys]), np.concatenate([io[k] for k in keys])
+            )
 
 
 def write_correlations(results: list[ProcessingResult], output_file: str | Path) -> None:

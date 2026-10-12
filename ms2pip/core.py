@@ -52,6 +52,59 @@ def _set_rayon_threads(processes: int | None) -> None:
     os.environ["RAYON_NUM_THREADS"] = str(processes)
 
 
+def _split_xgb_models(xgb_models: dict | None) -> tuple[dict | None, dict | None]:
+    """Split ``{"terminal": ..., "internal": ...}`` booster dicts; plain dicts are terminal."""
+    if xgb_models is not None and set(xgb_models) == {"terminal", "internal"}:
+        return xgb_models["terminal"], xgb_models["internal"]
+    return xgb_models, None
+
+
+def _internal_block_features(peptidoform, block: dict, site_matrix: np.ndarray) -> np.ndarray:
+    """Internal fragment feature rows for one peptide (see ``build_internal_features``)."""
+    from ms2pip._utils.internal import build_internal_features
+
+    return build_internal_features(
+        site_matrix,
+        peptidoform.sequence,
+        block["s"],
+        block["e"],
+        block["n_isobaric"],
+        block["mz"]["yb"],
+        peptidoform.theoretical_mass,
+        peptidoform.precursor_charge,
+    )
+
+
+def _predict_internal_blocks(
+    blocks: list[dict],
+    peptidoforms: list,
+    all_features: list,
+    model: str,
+    model_dir: Path,
+    processes: int | None,
+    boosters: dict | None,
+) -> None:
+    """Add ``features`` and ``predicted`` (yb, ya; log2 scale) to each internal block."""
+    from ms2pip._utils.xgb_models import load_internal_xgb_models
+
+    for block, pep, feats in zip(blocks, peptidoforms, all_features):
+        block["features"] = _internal_block_features(pep, block, feats.reshape(-1, NUM_FEATURES))
+    lengths = [len(b["s"]) for b in blocks]
+    if boosters is None:
+        boosters = load_internal_xgb_models(MODELS[model], model_dir, processes)
+    matrix = np.vstack([b["features"] for b in blocks])
+    split_at = np.cumsum(lengths)[:-1]
+    per_type = {}
+    for key, booster in boosters.items():
+        if len(matrix):
+            preds = booster.inplace_predict(matrix).clip(min=np.log2(0.001)).astype(np.float32)
+        else:
+            preds = np.zeros(0, dtype=np.float32)
+        per_type[key] = np.split(preds, split_at)
+    for i, block in enumerate(blocks):
+        block["predicted"] = {key: parts[i] for key, parts in per_type.items()}
+
+
 def _predict_batch_internal(
     psm_list: PSMList,
     model: str,
@@ -97,14 +150,34 @@ def _predict_batch_internal(
 
     # Predict intensities with XGBoost
     logger.debug("Predicting intensities with XGBoost...")
+    terminal_models, internal_models = _split_xgb_models(xgb_models)
     predictions = predict_intensities(
         np.concatenate([f.reshape(-1, NUM_FEATURES) for f in all_features]),
         num_ions,
         MODELS[model],
         model_dir,
         processes=processes,
-        xgb_models=xgb_models,
+        xgb_models=terminal_models,
     )
+
+    internal = None
+    params = MODELS[model]
+    if params.get("internal_ion_types"):
+        from ms2rescore_rs import ms2pip_internal_fragments  # type: ignore[ty:unresolved-import]
+
+        internal = [
+            {"s": s, "e": e, "n_isobaric": n, "mz": {"yb": yb, "ya": ya}}
+            for s, e, n, yb, ya in ms2pip_internal_fragments(proformas, params["internal_max_mass"])
+        ]
+        _predict_internal_blocks(
+            internal,
+            [psm.peptidoform for psm in valid_psms],
+            all_features,
+            model,
+            model_dir,
+            processes,
+            internal_models,
+        )
 
     # Fill in results for valid PSMs
     for j, i in enumerate(valid_indices):
@@ -113,6 +186,7 @@ def _predict_batch_internal(
             psm=psm_list[i],
             theoretical_mz=all_mz[j],
             predicted_intensity=predictions[j],
+            internal=internal[j] if internal is not None else None,
         )
     return results
 
@@ -222,7 +296,7 @@ def _predict_with_observed(
     ion_types = [it.lower() for it in MODELS[model]["ion_types"]]
     frag_model = MODELS[model]["fragmentation"]
 
-    valid_matches, skipped_results, all_targets, proformas, num_ions, _ = (
+    valid_matches, skipped_results, all_targets, proformas, num_ions, internal = (
         _validate_and_extract_targets(
             psm_spectrum_annotations, model, processes, tolerance, tolerance_mode
         )
@@ -244,6 +318,16 @@ def _predict_with_observed(
         model_dir,
         processes=processes,
     )
+    if internal is not None:
+        _predict_internal_blocks(
+            internal,
+            [m.psm.peptidoform for m in valid_matches],
+            all_features,
+            model,
+            model_dir,
+            processes,
+            None,
+        )
 
     results = [
         ProcessingResult(
@@ -252,6 +336,7 @@ def _predict_with_observed(
             theoretical_mz=all_mz[i],
             predicted_intensity=predictions[i],
             observed_intensity=all_targets[i],
+            internal=internal[i] if internal is not None else None,
         )
         for i, m in enumerate(valid_matches)
     ]
@@ -333,19 +418,9 @@ def _extract_training_data(
     results = []
     for i, m in enumerate(valid_matches):
         if internal is not None:
-            from ms2pip._utils.internal import build_internal_features
-
-            pep = m.psm.peptidoform
             block = internal[i]
-            block["features"] = build_internal_features(
-                all_features[i].reshape(-1, NUM_FEATURES),
-                pep.sequence,
-                block["s"],
-                block["e"],
-                block["n_isobaric"],
-                block["mz"]["yb"],
-                pep.theoretical_mass,
-                pep.precursor_charge,
+            block["features"] = _internal_block_features(
+                m.psm.peptidoform, block, all_features[i].reshape(-1, NUM_FEATURES)
             )
         results.append(
             ProcessingResult(
@@ -591,6 +666,13 @@ def predict_library(
     # Pre-load XGBoost models once for all batches
     model_dir = validate_model(model, model_dir)
     xgb_models = load_xgb_models(MODELS[model], model_dir, processes)
+    if MODELS[model].get("internal_ion_types"):
+        from ms2pip._utils.xgb_models import load_internal_xgb_models
+
+        xgb_models = {
+            "terminal": xgb_models,
+            "internal": load_internal_xgb_models(MODELS[model], model_dir, processes),
+        }
 
     for batch in track(
         _into_batches(psm_list, batch_size=batch_size),
@@ -689,7 +771,7 @@ def correlate(
 
     if compute_correlations:
         logger.info("Computing correlations")
-        calculate_correlations(results)
+        calculate_correlations(results, model)
         logger.info(
             f"Median correlation: "
             f"{np.median([r.correlation for r in results if r.correlation is not None])}"
@@ -745,7 +827,7 @@ def correlate_single(
     result = predict_single(observed_spectrum.peptidoform, model=model)
     result.observed_intensity = observed_intensity
 
-    calculate_correlations([result])
+    calculate_correlations([result], model)
     return result
 
 
