@@ -151,24 +151,41 @@ class ProcessingResult(BaseModel):
         return ax
 
 
+def mask_mz(
+    values: dict[str, np.ndarray],
+    mz: dict[str, np.ndarray],
+    min_mz: float,
+    max_mz: float | None = None,
+) -> dict[str, np.ndarray]:
+    """Keep positions whose theoretical m/z is generated (> 0), >= min_mz and (if set) <= max_mz."""
+    out = {}
+    for k, v in values.items():
+        keep = (mz[k] > 0) & (mz[k] >= min_mz)
+        if max_mz is not None:
+            keep &= mz[k] <= max_mz
+        out[k] = v[keep]
+    return out
+
+
 def mask_low_mz(
     values: dict[str, np.ndarray], mz: dict[str, np.ndarray], min_mz: float
 ) -> dict[str, np.ndarray]:
-    """Keep the positions whose theoretical m/z is generated (> 0) and at or above min_mz."""
-    return {k: v[(mz[k] > 0) & (mz[k] >= min_mz)] for k, v in values.items()}
+    """Alias of ``mask_mz`` without an upper bound."""
+    return mask_mz(values, mz, min_mz)
 
 
 def calculate_correlations(results: list[ProcessingResult], model: str | None = None) -> None:
     """
     Calculate and add Pearson correlations to list of results.
 
-    For models with ``min_fragment_mz``, positions below it (or not generated) are excluded.
+    For models with ``min_fragment_mz`` / ``max_fragment_mz``, positions outside that range (or not generated) are excluded.
     Internal fragments get their own ``correlation_internal``.
     """
     # TODO: Consider nan values? https://github.com/CompOmics/ms2pip/pull/214/changes#diff-5f77421a48cf8f17c5b83ed031897ce8076e2f52c0028aa6f4294a34ba3b3305R115-R123
     from ms2pip.constants import MODELS
 
-    min_mz = (MODELS.get(model) or {}).get("min_fragment_mz") if model else None
+    params = (MODELS.get(model) or {}) if model else {}
+    min_mz, max_mz = params.get("min_fragment_mz"), params.get("max_fragment_mz")
     for result in results:
         if result.predicted_intensity is None or result.observed_intensity is None:
             continue
@@ -176,8 +193,8 @@ def calculate_correlations(results: list[ProcessingResult], model: str | None = 
         ion_types = list(result.predicted_intensity)
         pred, obs = result.predicted_intensity, result.observed_intensity
         if min_mz and result.theoretical_mz:
-            pred = mask_low_mz(pred, result.theoretical_mz, min_mz)
-            obs = mask_low_mz({k: obs[k] for k in ion_types}, result.theoretical_mz, min_mz)
+            pred = mask_mz(pred, result.theoretical_mz, min_mz, max_mz)
+            obs = mask_mz({k: obs[k] for k in ion_types}, result.theoretical_mz, min_mz, max_mz)
         result.correlation = pearson(
             np.concatenate([pred[it] for it in ion_types]),
             np.concatenate([obs[it] for it in ion_types]),
@@ -185,8 +202,8 @@ def calculate_correlations(results: list[ProcessingResult], model: str | None = 
         block = result.internal
         if block and block.get("predicted") is not None and block.get("observed") is not None:
             keys = list(block["predicted"])
-            ip = mask_low_mz(block["predicted"], block["mz"], min_mz or 0.0)
-            io = mask_low_mz({k: block["observed"][k] for k in keys}, block["mz"], min_mz or 0.0)
+            ip = mask_mz(block["predicted"], block["mz"], min_mz or 0.0, max_mz)
+            io = mask_mz({k: block["observed"][k] for k in keys}, block["mz"], min_mz or 0.0, max_mz)
             result.correlation_internal = pearson(
                 np.concatenate([ip[k] for k in keys]), np.concatenate([io[k] for k in keys])
             )

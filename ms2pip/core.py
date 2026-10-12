@@ -448,6 +448,12 @@ def _into_batches(iterable, batch_size: int) -> Generator[list, None, None]:
         yield batch
 
 
+def _outside_mz_range(mz: np.ndarray, min_mz: float, max_mz: float | None) -> np.ndarray:
+    """Boolean mask of positions not generated (m/z 0), below ``min_mz`` or above ``max_mz``."""
+    out = (mz < min_mz) | (mz == 0)
+    return out | (mz > max_mz) if max_mz is not None else out
+
+
 def _assemble_training_data(
     results: list[ProcessingResult], model: str
 ) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
@@ -484,6 +490,7 @@ def _assemble_training_data(
 
     params = MODELS[model]
     min_mz = params.get("min_fragment_mz")
+    max_mz = params.get("max_fragment_mz")
     columns = ["psm_index"] + get_feature_names() + [f"target_{it}" for it in ion_types]
     if min_mz:
         kept = [
@@ -493,7 +500,7 @@ def _assemble_training_data(
             step = -1 if is_c_terminal(ion_type) else 1
             mz = np.concatenate([r.theoretical_mz[ion_type][::step] for r in kept])
             training_data[f"mz_{ion_type}"] = mz
-            training_data.loc[(mz < min_mz) | (mz == 0), f"target_{ion_type}"] = np.nan
+            training_data.loc[_outside_mz_range(mz, min_mz, max_mz), f"target_{ion_type}"] = np.nan
         columns += [f"mz_{it}" for it in ion_types]
     training_data = training_data[columns]
     if not params.get("internal_ion_types"):
@@ -515,7 +522,7 @@ def _assemble_training_data(
     for key in ("yb", "ya"):
         mz = np.concatenate([r.internal["mz"][key] for r in rows])
         target = np.concatenate([r.internal["observed"][key] for r in rows]).astype(np.float64)
-        target[(mz < min_mz) | (mz == 0)] = np.nan
+        target[_outside_mz_range(mz, min_mz, max_mz)] = np.nan
         internal[f"target_{key}"], internal[f"mz_{key}"] = target, mz
     return training_data, internal
 

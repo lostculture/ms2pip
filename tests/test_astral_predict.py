@@ -5,7 +5,7 @@ import xgboost as xgb
 
 from ms2pip.constants import MODELS
 from ms2pip.core import correlate
-from ms2pip.result import mask_low_mz
+from ms2pip.result import mask_low_mz, mask_mz
 
 DATA = Path(__file__).parent / "test_data"
 
@@ -52,3 +52,11 @@ def test_correlations_and_batch_predict(tmp_path):
     r = next(r for r in out if r.internal)
     assert "observed" not in r.internal
     assert np.all(r.internal["predicted"]["ya"] == np.float32(-5.0))
+
+
+def test_mask_mz_upper_bound():
+    mz = {"b2": np.array([0.0, 140.0, 400.0, 2100.0])}
+    v = {"b2": np.array([1.0, 2.0, 3.0, 4.0])}
+    assert mask_mz(v, mz, 150.0, 2000.0)["b2"].tolist() == [3.0]
+    assert mask_mz(v, mz, 150.0)["b2"].tolist() == [3.0, 4.0]
+    assert mask_low_mz(v, mz, 150.0)["b2"].tolist() == [3.0, 4.0]
