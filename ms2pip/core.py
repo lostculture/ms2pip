@@ -290,6 +290,7 @@ def _predict_with_observed(
     processes: int | None = None,
     tolerance: float = 0.02,
     tolerance_mode: str = "Da",
+    xgb_models: dict | None = None,
 ) -> list[ProcessingResult]:
     """Compute features, m/z, XGBoost predictions, and observed targets for matched spectra."""
     model_dir = validate_model(model, model_dir)
@@ -317,6 +318,7 @@ def _predict_with_observed(
         MODELS[model],
         model_dir,
         processes=processes,
+        xgb_models=xgb_models,
     )
     if internal is not None:
         _predict_internal_blocks(
@@ -708,6 +710,7 @@ def correlate(
     ms2_tolerance: float = 0.02,
     ms2_tolerance_mode: str = "Da",
     processes: int | None = None,
+    xgb_models: dict | None = None,
 ) -> list[ProcessingResult]:
     """
     Compare predicted and observed intensities and optionally compute correlations.\f
@@ -750,6 +753,10 @@ def correlate(
     processes
         Number of threads for Rayon (Rust) and XGBoost parallelism. By default,
         all available.
+    xgb_models
+        Pre-loaded XGBoost models for ``model`` (from
+        :func:`ms2pip._utils.xgb_models.load_xgb_models`). Pass them when calling ``correlate``
+        repeatedly, e.g. per chunk of a large PSM list, so the models are not reloaded each time.
 
     Returns
     -------
@@ -774,6 +781,7 @@ def correlate(
         processes=processes,
         tolerance=ms2_tolerance,
         tolerance_mode=ms2_tolerance_mode,
+        xgb_models=xgb_models,
     )
 
     if compute_correlations:
