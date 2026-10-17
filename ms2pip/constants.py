@@ -168,8 +168,9 @@ MODELS = {
     # Electron-activated dissociation (SCIEX ZenoTOF). c and z+1 (z·) carry most of the
     # fragment intensity, alongside b and y. Most of the spectrum is unfragmented or
     # charge-reduced precursor, which is removed before normalisation.
-    # Preliminary: trained on one lab's antibody digests (PXD063988, KE 9 eV). Files are
-    # attached to a pre-release on the lostculture fork until they have a permanent home.
+    # Preliminary: trained on one lab's antibody digests (PXD063988, KE 9 eV). Internal model:
+    # not downloadable; load the files with model_dir (--model-dir) or from Mascot's
+    # ML_models/MS2PIP folder.
     "EAD": {
         "ion_types": ["B", "Y", "C", "Z+1"],
         "fragmentation": "ead_ext",
@@ -186,7 +187,7 @@ MODELS = {
             "model_20261007_EAD_C.xgboost": "31cc548caa29e6a630a7015cf8ffbe7c805bd2c0",
             "model_20261007_EAD_Zp1.xgboost": "1c43fc7984059c1b54d7690112f3241384f10136",
         },
-        "download_url": "https://github.com/lostculture/ms2pip/releases/download/ead-model-20261007",
+        "download_url": None,
     },
     # Orbitrap Astral HCD (Astral_ms2pip, MSI-476): terminal a/b/y with 2+ and H2O/NH3 losses, plus
     # internal yb/ya fragments (< 700 Da) indexed by segment. Pairs with the Mascot instrument ASTRAL-HCD.
